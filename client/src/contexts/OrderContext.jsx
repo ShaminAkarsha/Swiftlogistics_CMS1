@@ -1,3 +1,5 @@
+// Update your OrderContext.js file with this code
+
 import React, { createContext, useContext, useState, useEffect } from 'react';
 
 const OrderContext = createContext();
@@ -14,50 +16,44 @@ export const OrderProvider = ({ children }) => {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  // Mock data for initial development
-  useEffect(() => {
-    const mockOrders = [
-      {
-        id: 'ORD001',
-        trackingNumber: 'ST2024001',
-        pickupAddress: '123 Galle Road, Colombo 03',
-        deliveryAddress: '456 Kandy Road, Kandy',
-        packageInfo: '2kg Electronics',
-        status: 'in-transit',
-        createdAt: '2024-01-15',
-        estimatedDelivery: '2024-01-16',
-        cost: 'LKR 500'
-      },
-      {
-        id: 'ORD002',
-        trackingNumber: 'ST2024002',
-        pickupAddress: '789 Negombo Road, Negombo',
-        deliveryAddress: '321 Main Street, Gampaha',
-        packageInfo: '1kg Documents',
-        status: 'delivered',
-        createdAt: '2024-01-14',
-        estimatedDelivery: '2024-01-15',
-        cost: 'LKR 350'
-      },
-      {
-        id: 'ORD003',
-        trackingNumber: 'ST2024003',
-        pickupAddress: '555 Parliament Road, Battaramulla',
-        deliveryAddress: '777 Baseline Road, Colombo 09',
-        packageInfo: '5kg Books',
-        status: 'processing',
-        createdAt: '2024-01-16',
-        estimatedDelivery: '2024-01-17',
-        cost: 'LKR 750'
-      }
-    ];
-    setOrders(mockOrders);
-  }, []);
+  const API_BASE_URL = 'http://localhost:3000/api/orders';
 
-  const createOrder = async (orderData) => {
+  // Fetch all orders from backend
+  const fetchOrders = async (filters = {}) => {
     setLoading(true);
     try {
-      const response = await fetch('http://localhost:3000/api/orders/create', {
+      const queryParams = new URLSearchParams();
+      
+      if (filters.status && filters.status !== 'all') {
+        queryParams.append('status', filters.status);
+      }
+      
+      if (filters.search) {
+        queryParams.append('search', filters.search);
+      }
+      
+      const response = await fetch(`${API_BASE_URL}?${queryParams}`);
+      const result = await response.json();
+      
+      if (result.success) {
+        setOrders(result.orders);
+        return result.orders;
+      } else {
+        console.error('Failed to fetch orders:', result.error);
+        return [];
+      }
+    } catch (error) {
+      console.error('Error fetching orders:', error);
+      return [];
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Create new order
+  const createOrder = async (orderData) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/create`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -67,73 +63,123 @@ export const OrderProvider = ({ children }) => {
 
       const result = await response.json();
       
-      if (!response.ok) {
+      if (result.success) {
+        // Add the new order to the local state
+        setOrders(prevOrders => [result.order, ...prevOrders]);
+        
+        return {
+          success: true,
+          order: result.order
+        };
+      } else {
         throw new Error(result.error || 'Failed to create order');
       }
-
-      // Add the new order to local state
-      setOrders(prev => [result.order, ...prev]);
-      
-      return {
-        success: true,
-        order: result.order
-      };
     } catch (error) {
       console.error('Error creating order:', error);
-      
-      // Fallback to mock data if API fails (for development)
-      if (process.env.NODE_ENV === 'development') {
-        const newOrder = {
-          id: `ORD${Date.now()}`,
-          trackingNumber: `ST${Date.now()}`,
-          ...orderData,
-          status: 'submitted',
-          createdAt: new Date().toISOString().split('T')[0],
-          cost: calculateCost(orderData.packageInfo, orderData.serviceType)
-        };
-        
-        setOrders(prev => [newOrder, ...prev]);
-        return { success: true, order: newOrder };
-      }
-      
       return {
         success: false,
         error: error.message
       };
-    } finally {
-      setLoading(false);
     }
   };
 
-  const calculateCost = (packageInfo, serviceType) => {
-    // Simple cost calculation logic
-    const baseRate = serviceType === 'express' ? 800 : 500;
-    const weight = parseFloat(packageInfo.split('kg')[0]) || 1;
-    return `LKR ${Math.round(baseRate * weight)}`;
+  // Get order by tracking number
+  const getOrderByTrackingNumber = async (trackingNumber) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/${trackingNumber}`);
+      const result = await response.json();
+      
+      if (result.success) {
+        return result.order;
+      } else {
+        console.error('Failed to get order:', result.error);
+        return null;
+      }
+    } catch (error) {
+      console.error('Error getting order:', error);
+      return null;
+    }
   };
 
-  const getOrdersByStatus = (status) => {
-    return orders.filter(order => order.status === status);
+  // Update order status
+  const updateOrderStatus = async (trackingNumber, status, notes = '', location = '') => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/${trackingNumber}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status, notes, location })
+      });
+
+      const result = await response.json();
+      
+      if (result.success) {
+        // Update the order in local state
+        setOrders(prevOrders => 
+          prevOrders.map(order => 
+            order.trackingNumber === trackingNumber 
+              ? { ...order, status, updatedAt: new Date().toISOString() }
+              : order
+          )
+        );
+        
+        return {
+          success: true,
+          order: result.order
+        };
+      } else {
+        throw new Error(result.error || 'Failed to update order status');
+      }
+    } catch (error) {
+      console.error('Error updating order status:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
   };
 
+  // Search orders locally (for immediate filtering)
   const searchOrders = (query) => {
+    if (!query) return orders;
+    
+    const searchTerm = query.toLowerCase();
     return orders.filter(order => 
-      order.trackingNumber.toLowerCase().includes(query.toLowerCase()) ||
-      order.pickupAddress.toLowerCase().includes(query.toLowerCase()) ||
-      order.deliveryAddress.toLowerCase().includes(query.toLowerCase())
+      order.trackingNumber.toLowerCase().includes(searchTerm) ||
+      order.pickup?.contact?.toLowerCase().includes(searchTerm) ||
+      order.delivery?.contact?.toLowerCase().includes(searchTerm) ||
+      order.pickupAddress?.toLowerCase().includes(searchTerm) ||
+      order.deliveryAddress?.toLowerCase().includes(searchTerm) ||
+      order.package?.description?.toLowerCase().includes(searchTerm) ||
+      order.packageInfo?.toLowerCase().includes(searchTerm)
     );
   };
 
-  const value = {
+  // Get orders by status locally
+  const getOrdersByStatus = (status) => {
+    if (status === 'all') return orders;
+    return orders.filter(order => order.status === status);
+  };
+
+  // Load orders on component mount
+  useEffect(() => {
+    fetchOrders();
+  }, []);
+
+  const contextValue = {
     orders,
     loading,
     createOrder,
+    getOrderByTrackingNumber,
+    updateOrderStatus,
+    searchOrders,
     getOrdersByStatus,
-    searchOrders
+    fetchOrders, // For manual refresh
   };
 
   return (
-    <OrderContext.Provider value={value}>
+    <OrderContext.Provider value={contextValue}>
       {children}
     </OrderContext.Provider>
   );

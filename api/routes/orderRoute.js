@@ -2,12 +2,16 @@ const express = require('express');
 const router = express.Router();
 const { 
   createOrder, 
-  getOrder, 
+  getOrder,
+  getAllOrders,
   updateOrderStatus 
 } = require('../controller/orderController');
 
 // Create new order
 router.post('/create', createOrder);
+
+// Get all orders with filtering and search
+router.get('/', getAllOrders);
 
 // Get order by tracking number
 router.get('/:trackingNumber', getOrder);

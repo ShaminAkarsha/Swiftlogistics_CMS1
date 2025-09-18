@@ -1,4 +1,5 @@
 const RabbitMQProducer = require('../rabbitmq/producer');
+const orderStorage = require('../utils/orderStorage');
 
 const producer = new RabbitMQProducer();
 
@@ -145,13 +146,27 @@ const createOrder = async (req, res) => {
       },
       
       // Order status and metadata
-      status: 'pending',
+      status: 'submitted',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       
       // Additional logistics data
-      priority: urgency === 'urgent' ? 'high' : urgency === 'high' ? 'medium' : 'normal'
+      priority: urgency === 'urgent' ? 'high' : urgency === 'high' ? 'medium' : 'normal',
+      
+      // Frontend display fields (matching your OrderManagement component)
+      pickupAddress,
+      deliveryAddress: sourceAddress,
+      packageInfo: `${packageWeight}kg ${packageDescription}`,
+      cost: `LKR ${shippingCost.toFixed(2)}`,
+      estimatedDelivery: new Date(estimatedDelivery).toLocaleDateString('en-GB', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      })
     };
+
+    // Store order in temporary storage for frontend display
+    const storedOrder = orderStorage.addOrder(orderData);
 
     // Send to RabbitMQ queue
     const queueSent = await producer.sendMessage('logistics_orders', orderData);
@@ -176,11 +191,15 @@ const createOrder = async (req, res) => {
       success: true,
       message: 'Order created successfully',
       order: {
+        ...storedOrder,
         trackingNumber,
-        status: 'pending',
-        estimatedDelivery,
-        shippingCost,
-        ...orderData
+        status: 'submitted',
+        estimatedDelivery: new Date(estimatedDelivery).toLocaleDateString('en-GB', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric'
+        }),
+        shippingCost
       }
     });
 
@@ -198,20 +217,19 @@ const getOrder = async (req, res) => {
   try {
     const { trackingNumber } = req.params;
     
-    // In a real application, you would fetch from database
-    // For now, we'll send a message to get order status
-    const queryData = {
-      action: 'get_order',
-      trackingNumber,
-      timestamp: new Date().toISOString()
-    };
+    // Get order from storage
+    const order = orderStorage.getOrderByTrackingNumber(trackingNumber);
     
-    await producer.sendMessage('order_queries', queryData);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'Order not found'
+      });
+    }
     
     res.status(200).json({
       success: true,
-      message: 'Order query sent for processing',
-      trackingNumber
+      order
     });
     
   } catch (error) {
@@ -219,6 +237,44 @@ const getOrder = async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to query order'
+    });
+  }
+};
+
+// Get all orders with filtering
+const getAllOrders = async (req, res) => {
+  try {
+    const { status, search, limit = 50, offset = 0 } = req.query;
+    
+    let orders = orderStorage.getAllOrders();
+    
+    // Apply status filter
+    if (status && status !== 'all') {
+      orders = orderStorage.getOrdersByStatus(status);
+    }
+    
+    // Apply search filter
+    if (search) {
+      orders = orderStorage.searchOrders(search);
+    }
+    
+    // Apply pagination
+    const startIndex = parseInt(offset);
+    const endIndex = startIndex + parseInt(limit);
+    const paginatedOrders = orders.slice(startIndex, endIndex);
+    
+    res.status(200).json({
+      success: true,
+      orders: paginatedOrders,
+      total: orders.length,
+      hasMore: endIndex < orders.length
+    });
+    
+  } catch (error) {
+    console.error('Error querying orders:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to query orders'
     });
   }
 };
@@ -236,13 +292,24 @@ const updateOrderStatus = async (req, res) => {
       });
     }
     
+    // Update in storage
+    const updatedOrder = orderStorage.updateOrderStatus(trackingNumber, status, notes, location);
+    
+    if (!updatedOrder) {
+      return res.status(404).json({
+        success: false,
+        error: 'Order not found'
+      });
+    }
+    
+    // Send to RabbitMQ for processing
     const updateData = {
       trackingNumber,
       status,
       location: location || '',
       notes: notes || '',
       updatedAt: new Date().toISOString(),
-      updatedBy: 'system' // You can get this from authentication
+      updatedBy: 'system'
     };
     
     await producer.sendMessage('order_updates', updateData);
@@ -260,8 +327,8 @@ const updateOrderStatus = async (req, res) => {
     
     res.status(200).json({
       success: true,
-      message: 'Order status update sent for processing',
-      data: updateData
+      message: 'Order status updated successfully',
+      order: updatedOrder
     });
     
   } catch (error) {
@@ -276,5 +343,6 @@ const updateOrderStatus = async (req, res) => {
 module.exports = {
   createOrder,
   getOrder,
+  getAllOrders,
   updateOrderStatus
 };
